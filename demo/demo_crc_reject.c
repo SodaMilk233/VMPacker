@@ -1,0 +1,283 @@
+/*
+ * demo_crc_reject.c — CRC 校验拒绝运行验证 demo
+ *
+ * 模拟完整 stub 流程:
+ *   1. XOR 解密字节码
+ *   2. 解析 BR 映射表 (尾部)
+ *   3. 解析 CRC 段 (在 BR 表前)
+ *   4. 校验字节码 CRC + stub 内存 CRC
+ *   5. 校验失败 → 返回 0, 不执行任何字节码
+ *
+ * 同时对比 VMProtect 泄露源码 (loader.cc:1910-1935) 的 CRC 逻辑:
+ *   VMProtect:  CRCValueCryptor 加密条目 → CalcCRC → is_valid_crc
+ *   我们:      CRC_MAGIC 标记段      → crc32_calc → crc_verify
+ *
+ * 编译: aarch64-linux-gnu-gcc -static -O2 demo/demo_crc_reject.c -o
+ * build/demo_crc_reject
+ */
+#include <stdio.h>
+#include <string.h>
+
+/* =========== 复用 stub 的 CRC 实现 (与 vm_crc.h 一致) =========== */
+
+typedef unsigned char u8;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+
+static inline u16 rd16(const u8 *p) { return (u16)p[0] | ((u16)p[1] << 8); }
+static inline u32 rd32(const u8 *p) {
+  return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+static inline u64 rd64(const u8 *p) {
+  return (u64)rd32(p) | ((u64)rd32(p + 4) << 32);
+}
+static inline void wr32(u8 *p, u32 v) {
+  p[0] = v;
+  p[1] = v >> 8;
+  p[2] = v >> 16;
+  p[3] = v >> 24;
+}
+static inline void wr64(u8 *p, u64 v) {
+  wr32(p, (u32)v);
+  wr32(p + 4, (u32)(v >> 32));
+}
+
+#define CRC_MAGIC 0x43524332u
+#define CRC_SECTION_SIZE 24
+
+static u32 _crc_tab[256];
+static int _crc_ready = 0;
+
+static void crc32_init(void) {
+  u32 i, j, c;
+  for (i = 0; i < 256; i++) {
+    c = i;
+    for (j = 0; j < 8; j++)
+      c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+    _crc_tab[i] = c;
+  }
+  _crc_ready = 1;
+}
+
+static u32 crc32_calc(const u8 *data, u32 len) {
+  u32 crc = 0xFFFFFFFFu, i;
+  if (!_crc_ready)
+    crc32_init();
+  for (i = 0; i < len; i++)
+    crc = _crc_tab[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+  return crc ^ 0xFFFFFFFFu;
+}
+
+/* =========== 模拟 stub 代码区域 =========== */
+
+static u8 fake_stub[64] = {
+    0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91, 0x00, 0x00, 0x80,
+    0xD2, 0xE8, 0x03, 0x1F, 0xAA, 0x01, 0x00, 0x00, 0xD4, 0xFD, 0x7B,
+    0xC1, 0xA8, 0xC0, 0x03, 0x5F, 0xD6, 0x00, 0x00, 0x00, 0x00, 0xAA,
+    0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    0x99, 0xAA, 0xBB, 0xCC, 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA,
+    0xBE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+};
+
+/* =========== 构造带 CRC 段的字节码缓冲区 =========== */
+
+/*
+ * 模拟 packer 生成的字节码布局:
+ *   [VM bytecode (20B)][CRC section (24B)]
+ *
+ * CRC section:
+ *   [stub_va:u64][stub_size:u32][stub_crc:u32][bc_crc:u32][CRC_MAGIC:u32]
+ */
+static int build_buffer(u8 *buf, int *total_len, u64 stub_va, u32 stub_size) {
+  /* 1. VM 字节码 */
+  u8 bc[] = {0x5A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x00,
+             0x2F, 0x02, 0x01, 0x37, 0x03, 0x01, 0x02, 0x9F, 0x03, 0x00};
+  int bc_len = sizeof(bc);
+  int pos = 0;
+
+  memcpy(buf, bc, bc_len);
+  pos = bc_len;
+
+  /* 2. CRC 段 */
+  u32 bc_crc = crc32_calc(bc, bc_len);
+  u32 stub_crc = crc32_calc(fake_stub, stub_size);
+
+  wr64(buf + pos, stub_va);
+  pos += 8;
+  wr32(buf + pos, stub_size);
+  pos += 4;
+  wr32(buf + pos, stub_crc);
+  pos += 4;
+  wr32(buf + pos, bc_crc);
+  pos += 4;
+  wr32(buf + pos, CRC_MAGIC);
+  pos += 4;
+
+  *total_len = pos;
+  return bc_len; /* 返回实际字节码长度 */
+}
+
+/* =========== 模拟 stub 的 crc_verify 逻辑 =========== */
+
+/*
+ * 对比 VMProtect loader.cc:1910-1935:
+ *
+ * VMProtect:
+ *   1. CalcCRC(loader 代码) == 预存 hash?     → is_valid_crc
+ *   2. 遍历 CRC_INFO[] (Decrypt每个字段),
+ *      CalcCRC(region) == crc_info.Hash?       → is_valid_crc
+ *   3. !is_valid_crc && CHECK_PATCH →
+ *      LoaderMessage(mtFileCorrupted); return LOADER_ERROR;
+ *
+ * 我们:
+ *   1. crc32_calc(字节码) == bc_crc?           → 失败返回 0
+ *   2. crc32_calc(stub 内存) == stub_crc?      → 失败返回 0
+ *   3. 校验失败 → return 0 (不运行)
+ *
+ * 区别:
+ *   - VMProtect CRC 条目本身加密 (CRCValueCryptor), 我们用 magic 标记
+ *   - VMProtect 有"标记模式" (set_is_patch_detected), 我们直接拒绝
+ *   - VMProtect 检查 file CRC (磁盘文件), 我们只检查内存
+ */
+
+static int simulate_crc_verify(u8 *bc_buf, u32 bc_len, int verbose) {
+  if (bc_len < CRC_SECTION_SIZE)
+    return 1;
+
+  u32 magic = rd32(&bc_buf[bc_len - 4]);
+  if (magic != CRC_MAGIC)
+    return 1;
+
+  u32 bc_crc = rd32(&bc_buf[bc_len - 8]);
+  u32 stub_crc = rd32(&bc_buf[bc_len - 12]);
+  u32 stub_size = rd32(&bc_buf[bc_len - 16]);
+  u64 stub_va = rd64(&bc_buf[bc_len - 24]);
+
+  u32 actual_bc_len = bc_len - CRC_SECTION_SIZE;
+
+  if (verbose) {
+    printf("  CRC section found: magic=0x%08X\n", magic);
+    printf("  stub_va=0x%llX stub_size=%u stub_crc=0x%08X\n",
+           (unsigned long long)stub_va, stub_size, stub_crc);
+    printf("  bc_len=%u bc_crc=0x%08X\n", actual_bc_len, bc_crc);
+  }
+
+  /* 1. 字节码 CRC */
+  u32 actual_bc = crc32_calc(bc_buf, actual_bc_len);
+  if (verbose)
+    printf("  bytecode CRC: expected=0x%08X actual=0x%08X %s\n", bc_crc,
+           actual_bc, actual_bc == bc_crc ? "OK" : "MISMATCH!");
+  if (actual_bc != bc_crc)
+    return 0;
+
+  /* 2. stub 内存 CRC */
+  if (stub_va != 0 && stub_size != 0) {
+    u32 actual_stub = crc32_calc((const u8 *)(unsigned long)stub_va, stub_size);
+    if (verbose)
+      printf("  stub mem CRC: expected=0x%08X actual=0x%08X %s\n", stub_crc,
+             actual_stub, actual_stub == stub_crc ? "OK" : "MISMATCH!");
+    if (actual_stub != stub_crc)
+      return 0;
+  }
+
+  return 1;
+}
+
+/* =========== 测试用例 =========== */
+
+static int test_pass(void) {
+  u8 buf[256];
+  int total;
+  build_buffer(buf, &total, (u64)(unsigned long)fake_stub, sizeof(fake_stub));
+
+  int ok = simulate_crc_verify(buf, total, 1);
+  printf("[Test] CRC pass → run: %s\n\n", ok ? "PASS (would run)" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+static int test_bc_tamper(void) {
+  printf("--- Tamper bytecode[5] ---\n");
+  u8 buf[256];
+  int total;
+  build_buffer(buf, &total, (u64)(unsigned long)fake_stub, sizeof(fake_stub));
+
+  /* 篡改字节码第 5 字节 */
+  buf[5] ^= 0xFF;
+
+  int ok = simulate_crc_verify(buf, total, 1);
+  printf("[Test] BC tamper → reject: %s\n\n",
+         !ok ? "PASS (refused to run)" : "FAIL (should have refused!)");
+  return !ok ? 0 : 1;
+}
+
+static int test_stub_patch(void) {
+  printf("--- Patch stub code (BRK #0 at entry) ---\n");
+  u8 buf[256];
+  int total;
+  build_buffer(buf, &total, (u64)(unsigned long)fake_stub, sizeof(fake_stub));
+
+  /* 模拟 IDA 在 stub 入口 patch BRK 指令 */
+  u8 saved[4];
+  memcpy(saved, fake_stub, 4);
+  fake_stub[0] = 0x00;
+  fake_stub[1] = 0x00;
+  fake_stub[2] = 0x20;
+  fake_stub[3] = 0xD4; /* BRK #0 */
+
+  int ok = simulate_crc_verify(buf, total, 1);
+
+  memcpy(fake_stub, saved, 4); /* 恢复 */
+
+  printf("[Test] Stub patch → reject: %s\n\n",
+         !ok ? "PASS (refused to run)" : "FAIL (should have refused!)");
+  return !ok ? 0 : 1;
+}
+
+static int test_no_crc_section(void) {
+  printf("--- No CRC section (backward compat) ---\n");
+  u8 bc[] = {0x5A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x00};
+
+  int ok = simulate_crc_verify(bc, sizeof(bc), 0);
+  printf("[Test] No CRC → run anyway: %s\n\n",
+         ok ? "PASS (backward compat)" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+static int test_dual_tamper(void) {
+  printf("--- Tamper both BC and stub ---\n");
+  u8 buf[256];
+  int total;
+  build_buffer(buf, &total, (u64)(unsigned long)fake_stub, sizeof(fake_stub));
+
+  buf[0] ^= 0x01;        /* 改字节码 */
+  fake_stub[10] ^= 0xFF; /* 改 stub */
+
+  int ok = simulate_crc_verify(buf, total, 1);
+
+  buf[0] ^= 0x01; /* 恢复 */
+  fake_stub[10] ^= 0xFF;
+
+  printf("[Test] Dual tamper → reject: %s\n\n",
+         !ok ? "PASS (refused)" : "FAIL");
+  return !ok ? 0 : 1;
+}
+
+int main(void) {
+  printf("=== CRC Rejection Test (vs VMProtect logic) ===\n\n");
+
+  printf("VMProtect loader.cc:1929-1932 对比:\n");
+  printf("  VMP:  !is_valid_crc && CHECK_PATCH → return LOADER_ERROR\n");
+  printf("  Ours: !crc_verify()               → return 0 (不运行)\n\n");
+
+  int f = 0;
+  f += test_pass();
+  f += test_bc_tamper();
+  f += test_stub_patch();
+  f += test_no_crc_section();
+  f += test_dual_tamper();
+
+  printf("=== Result: %s (%d failures) ===\n",
+         f == 0 ? "ALL PASS" : "SOME FAILED", f);
+  return f;
+}

@@ -1,0 +1,205 @@
+/*
+ * demo_crc.c — CRC32 完整性校验 独立验证 demo
+ *
+ * 编译: aarch64-linux-gnu-gcc -static -O2 demo_crc.c -o demo_crc
+ * 运行: ./demo_crc
+ *
+ * CRC-32/ISO 多项式 0xEDB88320 (与 Go crc32.ChecksumIEEE 一致)
+ * 纯 C 实现，无外部依赖。
+ */
+#include <stdio.h>
+#include <string.h>
+
+/* ---- CRC32 查表实现 (256 entry) ---- */
+
+static unsigned int crc32_table[256];
+static int crc32_table_ready = 0;
+
+static void crc32_init(void) {
+  unsigned int i, j, c;
+  for (i = 0; i < 256; i++) {
+    c = i;
+    for (j = 0; j < 8; j++) {
+      if (c & 1)
+        c = 0xEDB88320u ^ (c >> 1);
+      else
+        c = c >> 1;
+    }
+    crc32_table[i] = c;
+  }
+  crc32_table_ready = 1;
+}
+
+static unsigned int crc32_calc(const unsigned char *data, unsigned int len) {
+  unsigned int crc = 0xFFFFFFFFu;
+  unsigned int i;
+  if (!crc32_table_ready)
+    crc32_init();
+  for (i = 0; i < len; i++)
+    crc = crc32_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+  return crc ^ 0xFFFFFFFFu;
+}
+
+/* ---- CRC 条目结构 (与 packer 端一致) ---- */
+
+typedef struct {
+  unsigned int offset; /* 字节码段起始偏移 */
+  unsigned int size;   /* 段长度 */
+  unsigned int hash;   /* CRC32 校验值 */
+} crc_entry_t;
+
+#define CRC_MAGIC 0x43524332u /* "CRC2" (little-endian) */
+
+/* ---- 模拟字节码 ---- */
+
+static unsigned char fake_bytecode[] = {
+    /* 模拟 20 字节 VM 字节码 */
+    0x5A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x00,
+    0x2F, 0x02, 0x01, 0x37, 0x03, 0x01, 0x02, 0x9F, 0x03, 0x01,
+};
+
+/* ---- 测试 ---- */
+
+static int test_normal(void) {
+  /* 计算整段字节码的 CRC */
+  unsigned int expected = crc32_calc(fake_bytecode, sizeof(fake_bytecode));
+
+  /* 模拟 packer 端生成的 CRC 表 */
+  crc_entry_t entry;
+  entry.offset = 0;
+  entry.size = sizeof(fake_bytecode);
+  entry.hash = expected;
+
+  /* 模拟 stub 端校验 */
+  unsigned int actual = crc32_calc(fake_bytecode + entry.offset, entry.size);
+
+  if (actual == entry.hash) {
+    printf("[CRC demo] normal check: PASS (crc=0x%08X)\n", actual);
+    return 0;
+  } else {
+    printf("[CRC demo] normal check: FAIL (expected=0x%08X, got=0x%08X)\n",
+           entry.hash, actual);
+    return 1;
+  }
+}
+
+static int test_tamper(void) {
+  /* 先算正确 CRC */
+  unsigned int expected = crc32_calc(fake_bytecode, sizeof(fake_bytecode));
+
+  /* 篡改一个字节 */
+  unsigned char saved = fake_bytecode[5];
+  fake_bytecode[5] ^= 0xFF;
+
+  unsigned int actual = crc32_calc(fake_bytecode, sizeof(fake_bytecode));
+
+  /* 恢复 */
+  fake_bytecode[5] = saved;
+
+  if (actual != expected) {
+    printf("[CRC demo] tamper detect: PASS (expected=0x%08X, got=0x%08X)\n",
+           expected, actual);
+    return 0;
+  } else {
+    printf("[CRC demo] tamper detect: FAIL (CRC should differ!)\n");
+    return 1;
+  }
+}
+
+static int test_multi_segment(void) {
+  /*
+   * 模拟多段 CRC 校验 (类似 VMProtect 分段 CRC)
+   * 字节码分成 [0..9] 和 [10..19] 两段
+   */
+  crc_entry_t entries[2];
+  entries[0].offset = 0;
+  entries[0].size = 10;
+  entries[0].hash = crc32_calc(fake_bytecode, 10);
+  entries[1].offset = 10;
+  entries[1].size = 10;
+  entries[1].hash = crc32_calc(fake_bytecode + 10, 10);
+
+  int pass = 1;
+  int i;
+  for (i = 0; i < 2; i++) {
+    unsigned int actual =
+        crc32_calc(fake_bytecode + entries[i].offset, entries[i].size);
+    if (actual != entries[i].hash) {
+      printf("[CRC demo] segment[%d] check: FAIL\n", i);
+      pass = 0;
+    }
+  }
+
+  if (pass) {
+    printf("[CRC demo] multi-segment check: PASS (%d segments)\n", 2);
+    return 0;
+  }
+  return 1;
+}
+
+static int test_trailer_format(void) {
+  /*
+   * 模拟字节码尾部 CRC 表的打包/解包
+   * 格式: [crc_magic:u32][crc_count:u32][entries...][原有尾部数据]
+   */
+  unsigned char buf[256];
+  int pos = 0;
+
+  /* 1. 写入 VM 字节码 */
+  memcpy(buf, fake_bytecode, sizeof(fake_bytecode));
+  pos = sizeof(fake_bytecode);
+
+  /* 2. 写入 CRC 表 */
+  unsigned int magic = CRC_MAGIC;
+  unsigned int count = 1;
+  crc_entry_t entry;
+  entry.offset = 0;
+  entry.size = sizeof(fake_bytecode);
+  entry.hash = crc32_calc(fake_bytecode, sizeof(fake_bytecode));
+
+  memcpy(buf + pos, &magic, 4);
+  pos += 4;
+  memcpy(buf + pos, &count, 4);
+  pos += 4;
+  memcpy(buf + pos, &entry, sizeof(entry));
+  pos += sizeof(entry);
+
+  /* 3. 解析 CRC 表 (模拟 stub 端) */
+  int crc_off = sizeof(fake_bytecode);
+  unsigned int rd_magic, rd_count;
+  memcpy(&rd_magic, buf + crc_off, 4);
+  memcpy(&rd_count, buf + crc_off + 4, 4);
+
+  if (rd_magic != CRC_MAGIC) {
+    printf("[CRC demo] trailer format: FAIL (bad magic 0x%08X)\n", rd_magic);
+    return 1;
+  }
+
+  crc_entry_t rd_entry;
+  memcpy(&rd_entry, buf + crc_off + 8, sizeof(crc_entry_t));
+
+  unsigned int actual = crc32_calc(buf + rd_entry.offset, rd_entry.size);
+  if (actual == rd_entry.hash) {
+    printf("[CRC demo] trailer format: PASS (magic=0x%08X, %u entries)\n",
+           rd_magic, rd_count);
+    return 0;
+  } else {
+    printf("[CRC demo] trailer format: FAIL (hash mismatch)\n");
+    return 1;
+  }
+}
+
+int main(void) {
+  printf("=== CRC32 Integrity Check Demo ===\n\n");
+
+  int failures = 0;
+  failures += test_normal();
+  failures += test_tamper();
+  failures += test_multi_segment();
+  failures += test_trailer_format();
+
+  printf("\n=== Result: %s (%d failures) ===\n",
+         failures == 0 ? "ALL PASS" : "SOME FAILED", failures);
+
+  return failures;
+}
