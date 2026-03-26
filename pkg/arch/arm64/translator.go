@@ -602,6 +602,13 @@ func (t *Translator) translateOne(instructions []vm.Instruction, idx int) (int, 
 		return 0, t.trStackLdadd(inst)
 	case CAS:
 		return 0, t.trStackCas(inst)
+	// ========== PAC/BTI NOP化 ==========
+	case PACIASP, AUTIASP, PACIAZ, AUTIAZ, PACIBSP, AUTIBSP, XPACLRI:
+		t.emit(vm.OpNop)
+		return 0, nil
+	case BTI_C, BTI_J, BTI_JC, BTI:
+		t.emit(vm.OpNop)
+		return 0, nil
 
 	default:
 		return 0, fmt.Errorf("不支持的指令类型")
