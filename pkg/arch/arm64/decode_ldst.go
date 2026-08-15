@@ -64,6 +64,19 @@ var ldstPatterns = []InstrPattern{
 	// SIMD load/store (LD1/ST1 multiple structures)
 	// 编码: 0:Q:001100:L:000000:opcode:00:Rn:Rt
 	// ================================================================
+	// LDR/STR Qt, [Xn] (unsigned immediate with imm12=0). The VM SIMD
+	// transfer op currently has no address-offset operand, so only the
+	// zero-offset form is accepted here.
+	{
+		Name: "LDR_Q_ZERO", Mask: 0xFFFFFC00, Value: 0x3DC00000, Op: LD1_16B,
+		Fields: []FieldDef{fRn, fRd},
+		Post:   postSimdQ,
+	},
+	{
+		Name: "STR_Q_ZERO", Mask: 0xFFFFFC00, Value: 0x3D800000, Op: ST1_16B,
+		Fields: []FieldDef{fRn, fRd},
+		Post:   postSimdQ,
+	},
 	{
 		Name: "LD1_16B", Mask: 0xBFFF0000, Value: 0x0C400000, Op: LD1_16B,
 		Fields: []FieldDef{fRn, fRd, {Name: "opcode", Hi: 15, Lo: 12}},
@@ -498,6 +511,10 @@ func postSimdMulti(f map[string]int64, inst *vm.Instruction) {
 	default:
 		inst.Op = int(UNSUPPORTED)
 	}
+}
+
+func postSimdQ(_ map[string]int64, inst *vm.Instruction) {
+	inst.Imm = 16
 }
 
 // postLdrStrPrePost LDR/STR pre/post index

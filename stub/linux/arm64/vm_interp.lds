@@ -1,4 +1,6 @@
 /* vm_interp.lds — 将所有 sections 合并到一个可执行段 */
+ENTRY(vm_entry)
+
 SECTIONS {
   . = 0;
   .text : {

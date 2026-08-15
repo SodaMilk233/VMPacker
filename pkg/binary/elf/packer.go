@@ -113,26 +113,51 @@ func NewPacker(input, output string, funcs []string, addrSpecs []AddrSpec, verbo
 
 // FindFunction 在 ELF 中查找函数
 func (p *Packer) FindFunction(f *elf.File, name string) (*vm.FuncInfo, error) {
-	syms, err := f.Symbols()
-	if err != nil {
-		return nil, fmt.Errorf("reading symbol table failed: %v", err)
+	var sources [][]elf.Symbol
+	staticSyms, staticErr := f.Symbols()
+	if staticErr == nil {
+		sources = append(sources, staticSyms)
 	}
-	for _, sym := range syms {
-		if sym.Name == name && elf.ST_TYPE(sym.Info) == elf.STT_FUNC {
-			info := &vm.FuncInfo{
-				Name: sym.Name,
-				Addr: sym.Value,
-				Size: sym.Size,
+	dynamicSyms, dynamicErr := f.DynamicSymbols()
+	if dynamicErr == nil {
+		sources = append(sources, dynamicSyms)
+	}
+
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("reading symbol tables failed: static: %v; dynamic: %v", staticErr, dynamicErr)
+	}
+
+	for _, syms := range sources {
+		for _, sym := range syms {
+			if sym.Name != name || elf.ST_TYPE(sym.Info) != elf.STT_FUNC ||
+				sym.Section == elf.SHN_UNDEF || sym.Size == 0 {
+				continue
 			}
+
 			if int(sym.Section) < len(f.Sections) {
 				sec := f.Sections[sym.Section]
-				info.Section = sec.Name
-				info.Offset = sec.Offset + (sym.Value - sec.Addr)
+				if sym.Value >= sec.Addr && sym.Value+sym.Size <= sec.Addr+sec.Size {
+					return &vm.FuncInfo{
+						Name:    sym.Name,
+						Addr:    sym.Value,
+						Size:    sym.Size,
+						Offset:  sec.Offset + (sym.Value - sec.Addr),
+						Section: sec.Name,
+					}, nil
+				}
 			}
-			return info, nil
+
+			// Some stripped ELF files retain a dynamic symbol but use an unusable
+			// section index. Resolve its file offset through the executable range.
+			return p.FindFunctionByAddr(f, AddrSpec{
+				Addr: sym.Value,
+				End:  sym.Value + sym.Size,
+				Name: sym.Name,
+			})
 		}
 	}
-	return nil, fmt.Errorf("function '%s' not found", name)
+
+	return nil, fmt.Errorf("function '%s' not found in static or dynamic symbol tables", name)
 }
 
 // FindFunctionByAddr 通过地址查找函数

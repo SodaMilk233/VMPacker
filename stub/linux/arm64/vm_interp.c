@@ -5,7 +5,7 @@
  *   vm_types.h       → 类型 + vm_ctx_t 结构体
  *   vm_opcodes.h     → 操作码定义
  *   vm_decode.h      → 字节码读取工具
- *   vm_handlers/*.h  → 分模块指令 handler
+ *   vm_handlers/     → 分模块指令 handler
  *
  * 编译 (交叉编译为 blob):
  *   aarch64-linux-gnu-gcc -c -Os -mcmodel=tiny -fno-stack-protector \

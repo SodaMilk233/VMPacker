@@ -1,0 +1,5 @@
+/build/
+/cmd/vmpacker/vm_interp.bin
+/vmp-gui/backend/api/vm_interp.bin
+/vmp-gui/build/appicon.png
+/vmp-gui/build/windows/

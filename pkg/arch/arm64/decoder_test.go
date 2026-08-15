@@ -167,6 +167,29 @@ func TestDecode_LDR_STR_unsigned(t *testing.T) {
 	expect(t, "STRB uoff Imm", int64(56), inst.Imm)
 }
 
+func TestDecode_LDR_STR_Q_zeroOffset(t *testing.T) {
+	d := NewDecoder()
+
+	// ldr q0, [x8] -> 0x3DC00100
+	inst := d.Decode(0x3DC00100, 0)
+	expect(t, "LDR Q Op", int(LD1_16B), inst.Op)
+	expect(t, "LDR Q Rn", 8, inst.Rn)
+	expect(t, "LDR Q Rd", 0, inst.Rd)
+	expect(t, "LDR Q length", int64(16), inst.Imm)
+
+	// str q0, [x24] -> 0x3D800300
+	inst = d.Decode(0x3D800300, 0)
+	expect(t, "STR Q Op", int(ST1_16B), inst.Op)
+	expect(t, "STR Q Rn", 24, inst.Rn)
+	expect(t, "STR Q Rd", 0, inst.Rd)
+	expect(t, "STR Q length", int64(16), inst.Imm)
+
+	// Non-zero unsigned offsets remain unsupported until the VM bytecode
+	// carries an address offset for SIMD transfers.
+	inst = d.Decode(0x3DC00500, 0) // ldr q0, [x8, #16]
+	expect(t, "LDR Q non-zero offset", int(UNSUPPORTED), inst.Op)
+}
+
 func TestDecode_LDR_STR_prepost(t *testing.T) {
 	d := NewDecoder()
 
