@@ -12,17 +12,45 @@ import (
 // ============================================================
 
 func (t *Translator) trBranch(inst vm.Instruction) error {
-	target := inst.Offset + int(inst.Imm)
+	target := int64(inst.Offset) + inst.Imm
 
-	if target < 0 || target > t.funcSize {
-		return fmt.Errorf("分支目标 0x%X 超出函数范围 [0, 0x%X)", target, t.funcSize)
+	if target < 0 || target > int64(t.funcSize) {
+		absoluteTarget, ok := addSignedOffset(t.funcAddr, target)
+		if !ok {
+			return fmt.Errorf("分支目标地址溢出: 函数 0x%X + 偏移 %d", t.funcAddr, target)
+		}
+		if _, allowed := t.externalBranchTargets[absoluteTarget]; !allowed {
+			return fmt.Errorf("分支目标 0x%X 超出函数范围 [0x%X, 0x%X]，且不是已知函数入口",
+				absoluteTarget, t.funcAddr, t.funcAddr+uint64(t.funcSize))
+		}
+
+		// AArch64 的外部 B 是尾调用：目标返回时应直接返回当前函数的调用者。
+		t.emit(vm.OpCallNative)
+		t.emitU64(absoluteTarget)
+		t.emit(vm.OpRet, 0)
+		return nil
 	}
 
 	t.emit(vm.OpJmp)
 	fixPos := t.pos()
 	t.emitU32(0)
-	t.fixups = append(t.fixups, branchFixup{vmOffset: fixPos, arm64Target: target})
+	t.fixups = append(t.fixups, branchFixup{vmOffset: fixPos, arm64Target: int(target)})
 	return nil
+}
+
+func addSignedOffset(base uint64, offset int64) (uint64, bool) {
+	if offset >= 0 {
+		delta := uint64(offset)
+		if delta > ^uint64(0)-base {
+			return 0, false
+		}
+		return base + delta, true
+	}
+	delta := uint64(-(offset + 1)) + 1
+	if delta > base {
+		return 0, false
+	}
+	return base - delta, true
 }
 
 func (t *Translator) trBranchCond(inst vm.Instruction) error {

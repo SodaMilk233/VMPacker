@@ -65,6 +65,9 @@ __attribute__((noinline)) VM_SECTION_SYSTEM static u32 hw_nop(vm_ctx_t *vm) {
 __attribute__((noinline)) VM_SECTION_MEM static u32 hw_mov_imm(vm_ctx_t *vm) {
   return h_mov_imm(vm);
 }
+__attribute__((noinline)) VM_SECTION_MEM static u32 hw_mov_image(vm_ctx_t *vm) {
+  return h_mov_image(vm);
+}
 __attribute__((noinline)) VM_SECTION_MEM static u32 hw_mov_imm32(vm_ctx_t *vm) {
   return h_mov_imm32(vm);
 }
@@ -340,6 +343,10 @@ __attribute__((noinline)) VM_SECTION_MEM static u32
 hw_s_push_imm64(vm_ctx_t *vm) {
   return h_s_push_imm64(vm);
 }
+__attribute__((noinline)) VM_SECTION_MEM static u32
+hw_s_push_image(vm_ctx_t *vm) {
+  return h_s_push_image(vm);
+}
 
 /* ---- 栈控制 ---- */
 __attribute__((noinline)) VM_SECTION_SYSTEM static u32 hw_s_dup(vm_ctx_t *vm) {
@@ -481,6 +488,7 @@ __attribute__((noinline)) static void vm_init_jump_table(vm_handler_fn *tbl) {
 
   /* 数据移动 */
   tbl[OP_MOV_IMM] = hw_mov_imm;
+	tbl[OP_MOV_IMAGE] = hw_mov_image;
   tbl[OP_MOV_IMM32] = hw_mov_imm32;
   tbl[OP_MOV_REG] = hw_mov_reg;
 
@@ -587,6 +595,7 @@ __attribute__((noinline)) static void vm_init_jump_table(vm_handler_fn *tbl) {
   tbl[OP_S_VSTORE] = hw_s_vstore;
   tbl[OP_S_PUSH_IMM32] = hw_s_push_imm32;
   tbl[OP_S_PUSH_IMM64] = hw_s_push_imm64;
+	tbl[OP_S_PUSH_IMAGE] = hw_s_push_image;
   tbl[OP_S_DUP] = hw_s_dup;
   tbl[OP_S_SWAP] = hw_s_swap;
   tbl[OP_S_DROP] = hw_s_drop;

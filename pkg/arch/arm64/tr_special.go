@@ -1,7 +1,7 @@
 package arm64
 
 import (
-	
+	"fmt"
 
 	"github.com/vmpacker/pkg/vm"
 )
@@ -17,21 +17,30 @@ func (t *Translator) trADRP(instructions []vm.Instruction, idx int) (int, error)
 		return 0, err
 	}
 
-	pc := t.funcAddr + uint64(inst.Offset)
+	pc, ok := addSignedOffset(t.funcAddr, int64(inst.Offset))
+	if !ok {
+		return 0, fmt.Errorf("ADRP PC 地址溢出")
+	}
 	pageBase := pc &^ 0xFFF
-	adrpResult := pageBase + uint64(inst.Imm)
+	adrpResult, ok := addSignedOffset(pageBase, inst.Imm)
+	if !ok {
+		return 0, fmt.Errorf("ADRP 目标地址溢出")
+	}
 
 	if idx+1 < len(instructions) {
 		next := instructions[idx+1]
 		if Op(next.Op) == ADD_IMM && next.Rd == inst.Rd && next.Rn == inst.Rd {
-			finalAddr := adrpResult + uint64(next.Imm)
-			t.emit(vm.OpMovImm, rd)
+			finalAddr, ok := addSignedOffset(adrpResult, next.Imm)
+			if !ok {
+				return 0, fmt.Errorf("ADRP+ADD 目标地址溢出")
+			}
+			t.emit(vm.OpMovImage, rd)
 			t.emitU64(finalAddr)
 			return 1, nil
 		}
 	}
 
-	t.emit(vm.OpMovImm, rd)
+	t.emit(vm.OpMovImage, rd)
 	t.emitU64(adrpResult)
 	return 0, nil
 }
@@ -41,9 +50,15 @@ func (t *Translator) trADR(inst vm.Instruction) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	pc := t.funcAddr + uint64(inst.Offset)
-	addr := pc + uint64(inst.Imm)
-	t.emit(vm.OpMovImm, rd)
+	pc, ok := addSignedOffset(t.funcAddr, int64(inst.Offset))
+	if !ok {
+		return 0, fmt.Errorf("ADR PC 地址溢出")
+	}
+	addr, ok := addSignedOffset(pc, inst.Imm)
+	if !ok {
+		return 0, fmt.Errorf("ADR 目标地址溢出")
+	}
+	t.emit(vm.OpMovImage, rd)
 	t.emitU64(addr)
 	return 0, nil
 }

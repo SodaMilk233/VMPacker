@@ -41,6 +41,12 @@ func (t *Translator) sPushImm64(v uint64) {
 	t.emitU64(v)
 }
 
+// sPushImage push an ELF image virtual address, relocated by the VM at runtime.
+func (t *Translator) sPushImage(v uint64) {
+	t.emit(vm.OpSPushImage)
+	t.emitU64(v)
+}
+
 // sPushImm push immediate, auto-select 32 vs 64 bit
 func (t *Translator) sPushImm(v uint64) {
 	if v <= 0xFFFFFFFF {
@@ -394,6 +400,9 @@ func (t *Translator) trStackLoad(inst vm.Instruction) error {
 		t.sPushImm32(48)
 		t.emit(vm.OpSAsr)
 	}
+	if !inst.SF && (op == LDRSB_IMM || op == LDRSH_IMM) {
+		t.emit(vm.OpSTrunc32)
+	}
 
 	if inst.Rd == vm.REG_XZR {
 		t.sDrop()
@@ -420,6 +429,9 @@ signext:
 			t.emit(vm.OpSShl)
 			t.sPushImm32(48)
 			t.emit(vm.OpSAsr)
+		}
+		if !inst.SF && (op == LDRSB_IMM || op == LDRSH_IMM) {
+			t.emit(vm.OpSTrunc32)
 		}
 		t.sVstore(rd)
 	}
@@ -1324,6 +1336,9 @@ func (t *Translator) trStackLoadRegSigned(inst vm.Instruction) error {
 		t.sPushImm32(sextBits)
 		t.emit(vm.OpSAsr)
 	}
+	if !inst.SF && (op == LDRSB_REG || op == LDRSH_REG) {
+		t.emit(vm.OpSTrunc32)
+	}
 
 	t.sVstore(rd)
 	return nil
@@ -1812,10 +1827,13 @@ func (t *Translator) trStackLdrLiteral(inst vm.Instruction) error {
 		return err
 	}
 
-	absAddr := uint64(inst.Imm)
+	absAddr, ok := addSignedOffset(t.funcAddr, int64(inst.Offset)+inst.Imm)
+	if !ok {
+		return fmt.Errorf("LDR literal 目标地址溢出")
+	}
 
-	// push absolute address on stack
-	t.sPushImm(absAddr)
+	// PC-relative literal points into the ELF image and needs the runtime load bias.
+	t.sPushImage(absAddr)
 
 	op := Op(inst.Op)
 	switch {

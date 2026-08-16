@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/elf"
 	_ "embed"
 	"flag"
 	"fmt"
@@ -27,20 +28,22 @@ var interpBlob []byte
 
 func main() {
 	funcList := flag.String("func", "", "要保护的函数名（逗号分隔多个）")
-	addrList := flag.String("addr", "", "按地址保护（格式: 0xADDR:SIZE[:name], 逗号分隔多个）")
+	addrList := flag.String("addr", "", "按地址保护（格式: START-END[:name] 或 ADDR:SIZE[:name]，逗号分隔）")
 	output := flag.String("o", "", "输出文件路径（默认: 原文件名.vmp）")
 	verbose := flag.Bool("v", false, "详细输出（显示反汇编）")
 	strip := flag.Bool("strip", true, "清除符号表（防止strip破坏保护）")
 	debug := flag.Bool("debug", false, "生成 debug 对照文件（ARM64 → VM 字节码映射）")
 	tokenEntry := flag.Bool("token", true, "启用 Token 化入口模式（3 指令跳板）— 默认开启")
 	info := flag.Bool("info", false, "仅打印 ELF 信息，不做保护")
+	discover := flag.Bool("discover", false, "列出符号表和 unwind 元数据中发现的函数范围")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `vmpacker - ARM64 ELF VMP 保护工具
 
 用法:
   vmpacker -func <函数名> [-v] [-o output] <input.elf>
-  vmpacker -addr <地址:大小[:名称]> [-v] [-o output] <input.elf>
+  vmpacker -addr <START-END[:name] | ADDR:SIZE[:name]> [-v] [-o output] <input.elf>
+  vmpacker -discover <input.elf>
   vmpacker -info <input.elf>
 
 选项:
@@ -53,6 +56,7 @@ func main() {
   vmpacker -func "check_license,verify_token" app.elf
   vmpacker -addr "0x4006AC-0x400790" app.elf
   vmpacker -addr "0x4006AC-0x400790:main" -func verify app.elf
+  vmpacker -discover app.elf
   vmpacker -info app.elf
 `)
 	}
@@ -77,6 +81,29 @@ func main() {
 		if err := elfpacker.PrintELFInfo(inputPath); err != nil {
 			fmt.Fprintf(os.Stderr, "[!] %v\n", err)
 			os.Exit(1)
+		}
+		return
+	}
+	if *discover {
+		f, err := elf.Open(inputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[!] 打开 ELF 失败: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if f.Machine != elf.EM_AARCH64 {
+			fmt.Fprintf(os.Stderr, "[!] 不支持的架构: %s\n", f.Machine)
+			os.Exit(1)
+		}
+		result := elfpacker.DiscoverFunctions(f)
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "[!] %s\n", warning)
+		}
+		fmt.Printf("[*] 发现 %d 个函数范围\n", len(result.Functions))
+		for _, function := range result.Functions {
+			fmt.Printf("0x%X-0x%X  %-10s %-6s %s\n",
+				function.Addr, function.Addr+function.Size,
+				function.Source, function.Confidence, function.Name)
 		}
 		return
 	}

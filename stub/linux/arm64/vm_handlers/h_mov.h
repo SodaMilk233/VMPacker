@@ -17,6 +17,13 @@ static inline u32 h_mov_imm(vm_ctx_t *vm) {
   return 10;
 }
 
+/* MOV Xd, image_base+VA [10B: op | d | image_va64] */
+static inline u32 h_mov_image(vm_ctx_t *vm) {
+  u8 d = vm->bc[vm->pc + 1];
+  vm->R[d & 31] = vm->image_bias + rd64(&vm->bc[vm->pc + 2]);
+  return 10;
+}
+
 /* MOV Wd, #imm32   [6B: op | d | imm32]  (零扩展到 64 位) */
 static inline u32 h_mov_imm32(vm_ctx_t *vm) {
   u8 d = vm->bc[vm->pc + 1];

@@ -74,7 +74,8 @@ static inline void sys_munmap(void *addr, unsigned long size) {
  * 返回: R[0] (模拟 X0 返回值)
  */
 __attribute__((section(".text.entry"))) u64 vm_entry(u64 *args, u8 *enc_bc,
-                                                     u32 bc_len, u8 xor_key);
+	                                                     u32 bc_len, u8 xor_key,
+	                                                     u64 image_bias);
 
 /* ================================================================
  * Token 化入口 (条件编译)
@@ -115,7 +116,10 @@ vm_entry_token_inner(u64 *args, u32 token) {
   if (__builtin_expect(enc_bc == (u8 *)self_va || bc_len == 0, 0))
     return 0; /* 无效条目, 安全退出 */
 
-  return vm_entry(args, enc_bc, bc_len, xor_key);
+	if (__builtin_expect(table[func_id].image_anchor_va == 0, 0))
+		return 0;
+	u64 image_bias = self_va - table[func_id].image_anchor_va;
+	return vm_entry(args, enc_bc, bc_len, xor_key, image_bias);
 }
 
 /* Naked 汇编入口: 保存调用方寄存器, 调用 C 内部函数 */
@@ -142,7 +146,8 @@ __attribute__((naked, section(".text.entry"), used)) void vm_entry_token(void) {
 
 /* ---- vm_entry 实现 ---- */
 __attribute__((section(".text.entry"))) u64 vm_entry(u64 *args, u8 *enc_bc,
-                                                     u32 bc_len, u8 xor_key) {
+	                                                     u32 bc_len, u8 xor_key,
+	                                                     u64 image_bias) {
   u64 ret = 0;
 
   /* ---- 1. 动态分配字节码缓冲区 (mmap, 替代栈上 64KB) ---- */
@@ -175,7 +180,8 @@ __attribute__((section(".text.entry"))) u64 vm_entry(u64 *args, u8 *enc_bc,
     sys_munmap(bc_buf, alloc_size);
     return 0;
   }
-  vm_ctx_init(vm, args, bc_buf, bc_len);
+	vm_ctx_init(vm, args, bc_buf, bc_len);
+	vm->image_bias = image_bias;
 
   /* ---- 2c. 解析字节码尾部 trailer ---- */
   /* 尾部格式 (从末尾向前剥离):
@@ -202,7 +208,7 @@ __attribute__((section(".text.entry"))) u64 vm_entry(u64 *args, u8 *enc_bc,
 
     if (trail_func_addr != 0 && trail_map_count > 0 &&
         map_data_size <= bc_len) {
-      vm->func_addr = trail_func_addr;
+		vm->func_addr = image_bias + trail_func_addr;
       vm->func_size = trail_func_size;
       vm->map_count = trail_map_count;
       vm->addr_map = (addr_map_entry_t *)&bc_buf[bc_len - map_data_size];
@@ -347,6 +353,7 @@ __attribute__((section(".text.entry"))) u64 vm_entry(u64 *args, u8 *enc_bc,
   dtab[OP_RET] = &&L_RET;
   /* 数据移动 */
   dtab[OP_MOV_IMM] = &&L_MOV_IMM;
+	dtab[OP_MOV_IMAGE] = &&L_MOV_IMAGE;
   dtab[OP_MOV_IMM32] = &&L_MOV_IMM32;
   dtab[OP_MOV_REG] = &&L_MOV_REG;
   /* 内存 */
@@ -482,6 +489,8 @@ L_RET: {
 /* ---- 数据移动 ---- */
 L_MOV_IMM:
   NEXT(h_mov_imm(vm));
+L_MOV_IMAGE:
+  NEXT(h_mov_image(vm));
 L_MOV_IMM32:
   NEXT(h_mov_imm32(vm));
 L_MOV_REG:

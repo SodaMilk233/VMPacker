@@ -89,44 +89,50 @@ func (e *VMPEngine) AnalyzeELF(filePath string) (map[string]interface{}, error) 
 		return nil, fmt.Errorf("unsupported architecture: only ARM64 is supported")
 	}
 
-	syms, err := f.Symbols()
-	if err != nil {
-		// Fallback to dynamic symbols for stripped binaries
-		syms, err = f.DynamicSymbols()
-		if err != nil {
-			return nil, fmt.Errorf("无法读取符号表或动态符号表: %v。可能不支持被完全抹除符号的程序", err)
-		}
-	}
-
+	discovery := elfpacker.DiscoverFunctions(f)
+	branchTargets := elfpacker.NativeBranchTargets(f, discovery.Functions)
+	checker := elfpacker.NewPacker(filePath, "", nil, nil, false, false, false, true, nil)
 	funcs := []map[string]interface{}{}
-	textSection := f.Section(".text")
-
-	for _, sym := range syms {
-		if elf.ST_TYPE(sym.Info) == elf.STT_FUNC && sym.Size > 0 {
-			// Basic heuristic: check if it's likely within .text
-			// (if section index is valid, we can be more certain, but this is a broad filter)
-			if textSection != nil && (sym.Value < textSection.Addr || sym.Value >= textSection.Addr+textSection.Size) {
-				continue // Skip functions outside .text bounds for now to avoid false positives
-			}
-
-			// Clean up the name for display if necessary
-			funcName := sym.Name
-
-			funcs = append(funcs, map[string]interface{}{
-				"name":       funcName,
-				"address":    fmt.Sprintf("0x%X", sym.Value),
-				"size":       sym.Size,
-				"protection": "Virtualization",
-			})
+	compatibleCount := 0
+	for _, candidate := range discovery.Functions {
+		isAddressCandidate := candidate.Source != ".symtab" && candidate.Source != ".dynsym"
+		fi, findErr := checker.FindFunctionByAddr(f, elfpacker.AddrSpec{
+			Addr: candidate.Addr,
+			End:  candidate.Addr + candidate.Size,
+			Name: candidate.Name,
+		})
+		compatibility := elfpacker.FunctionCompatibility{Reason: "function range could not be read"}
+		if findErr != nil {
+			compatibility.Reason = findErr.Error()
+		} else {
+			compatibility = checker.CheckFunctionCompatibility(f, fi, branchTargets)
 		}
+		if compatibility.Compatible {
+			compatibleCount++
+		}
+		funcs = append(funcs, map[string]interface{}{
+			"name":                candidate.Name,
+			"address":             fmt.Sprintf("0x%X", candidate.Addr),
+			"size":                candidate.Size,
+			"source":              candidate.Source,
+			"confidence":          candidate.Confidence,
+			"protection":          "Virtualization",
+			"isCustom":            isAddressCandidate,
+			"compatible":          compatibility.Compatible,
+			"compatibilityReason": compatibility.Reason,
+			"unsupportedCount":    compatibility.UnsupportedCount,
+		})
 	}
 
 	return map[string]interface{}{
-		"fileName":  fileName,
-		"filePath":  filePath,
-		"arch":      "ARM64",
-		"format":    "ELF",
-		"functions": funcs,
+		"fileName":          fileName,
+		"filePath":          filePath,
+		"arch":              "ARM64",
+		"format":            "ELF",
+		"functions":         funcs,
+		"warnings":          discovery.Warnings,
+		"compatibleCount":   compatibleCount,
+		"incompatibleCount": len(funcs) - compatibleCount,
 	}, nil
 }
 

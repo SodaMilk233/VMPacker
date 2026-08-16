@@ -206,12 +206,27 @@ make all
 ### Protect by Address Range
 
 ```bash
+# List ranges recovered from symbols and .eh_frame metadata
+./vmpacker -discover stripped.elf
+
 # Specify address range
 ./vmpacker -addr "0x4006AC-0x400790:main" -v -o protected.elf original.elf
+
+# Equivalent start + size form
+./vmpacker -addr "0x4006AC:0xE4:main" -v -o protected.elf original.elf
+
+# A start-only address is accepted when an exact symbol or FDE range exists
+./vmpacker -addr "0x4006AC" -v -o protected.elf stripped.elf
 
 # Mixed mode
 ./vmpacker -addr "0x4006AC-0x400790:main" -func verify -o protected.elf original.elf
 ```
+
+For fully stripped ELF files, VMPacker recovers function boundaries from
+`.eh_frame_hdr` / `.eh_frame`. It also supports binaries without section
+headers when `PT_GNU_EH_FRAME` is present. If no trustworthy metadata matches a
+start address, provide an explicit `START-END` or `ADDR:SIZE` range; VMPacker
+does not guess the end from the first `RET` instruction.
 
 ### Inspect ELF Info
 
@@ -224,7 +239,8 @@ make all
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-func` | — | Function name(s) to protect (comma-separated) |
-| `-addr` | — | Protect by address (`0xSTART-0xEND[:name]`) |
+| `-addr` | — | Protect by address (`START-END[:name]` or `ADDR:SIZE[:name]`) |
+| `-discover` | `false` | List function ranges recovered from symbols and unwind metadata |
 | `-o` | `input.vmp` | Output file path |
 | `-v` | `false` | Verbose output (show disassembly) |
 | `-strip` | `true` | Strip symbol table |

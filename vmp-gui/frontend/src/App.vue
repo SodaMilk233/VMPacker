@@ -209,9 +209,27 @@
            <!-- Tab 1: Functions Table -->
            <div v-show="currentTab === 'functions'" class="flex-1 flex flex-col min-h-0">
              <div class="h-12 border-b border-slate-200 flex items-center px-6 justify-between bg-white/60 backdrop-blur-sm shrink-0">
-                <el-button color="#f8fafc" size="small" :icon="Plus" @click="showAddDialog = true" class="text-slate-700 border-slate-300 hover:text-blue-600 hover:border-blue-400">添加函数</el-button>
-               <div class="w-72">
-                 <el-input v-model="searchQuery" size="small" placeholder="搜索函数..." class="light-input">
+               <div class="flex items-center space-x-4">
+                 <el-button color="#f8fafc" size="small" :icon="Plus" @click="showAddDialog = true" class="text-slate-700 border-slate-300 hover:text-blue-600 hover:border-blue-400">添加函数</el-button>
+                 <span class="text-xs text-slate-500 whitespace-nowrap">
+                   可保护 <strong class="font-semibold text-emerald-600">{{ compatibleCount }}</strong>
+                   <span class="mx-1.5 text-slate-300">·</span>
+                   已跳过 <strong class="font-semibold text-amber-600">{{ incompatibleCount }}</strong>
+                 </span>
+               </div>
+               <div class="flex items-center space-x-4">
+                 <div v-if="filteredAndSortedFunctions.length > pageSize" class="flex items-center space-x-3">
+                   <span class="text-xs text-slate-500 whitespace-nowrap">共 {{ filteredAndSortedFunctions.length }} 项</span>
+                   <el-pagination
+                     v-model:current-page="currentPage"
+                     :page-size="pageSize"
+                     :total="filteredAndSortedFunctions.length"
+                     layout="prev, pager, next"
+                     small
+                     background
+                   />
+                 </div>
+                 <el-input v-model="searchQuery" size="small" placeholder="搜索函数..." class="light-input w-72">
                    <template #prefix><el-icon><Search /></el-icon></template>
                  </el-input>
                </div>
@@ -223,24 +241,59 @@
                    <thead class="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase font-semibold tracking-wider">
                      <tr>
                        <th class="py-3 px-6 w-12 text-center">
-                         <input type="checkbox" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" @change="toggleAll" :checked="isAllSelected" />
+                         <input
+                           type="checkbox"
+                           class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                           title="选择全部可保护函数"
+                           @change="toggleAll"
+                           :checked="isAllSelected"
+                           :indeterminate="isPartiallySelected"
+                           :disabled="compatibleCount === 0"
+                         />
                        </th>
-                       <th class="py-3 px-6 w-2/5">函数节点</th>
-                       <th class="py-3 px-6 w-1/5">地址</th>
+                       <th class="py-3 px-6">函数节点</th>
+                       <th class="py-3 px-6">地址</th>
+                       <th class="py-3 px-6">大小</th>
+                       <th class="py-3 px-6">来源</th>
                        <th class="py-3 px-6">保护状态</th>
                      </tr>
                    </thead>
                    <tbody class="divide-y divide-slate-100">
-                     <tr v-for="fn in filteredAndSortedFunctions" :key="fn.address" class="hover:bg-blue-50/50 transition-colors group cursor-pointer" @click="fn.selected = !fn.selected">
+                     <tr
+                       v-for="fn in pagedFunctions"
+                       :key="`${fn.address}:${fn.name}`"
+                       :class="[
+                         'transition-colors group',
+                         isCompatible(fn) ? 'hover:bg-blue-50/50 cursor-pointer' : 'bg-slate-50/70 text-slate-400 cursor-not-allowed'
+                       ]"
+                       @click="toggleFunction(fn)"
+                     >
                        <td class="py-3 px-6 text-center" @click.stop>
-                          <input type="checkbox" v-model="fn.selected" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                          <input
+                            type="checkbox"
+                            v-model="fn.selected"
+                            :disabled="!isCompatible(fn)"
+                            :title="isCompatible(fn) ? '选择此函数' : fn.compatibilityReason"
+                            class="rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                          />
                        </td>
                        <td class="py-3 px-6 whitespace-nowrap text-slate-800 font-medium flex items-center">
                          <el-icon class="mr-3 text-slate-400 group-hover:text-blue-500 transition-colors"><Setting /></el-icon>{{ fn.name }}
                        </td>
                        <td class="py-3 px-6 text-slate-500 font-mono text-xs">{{ fn.address }}</td>
+                       <td class="py-3 px-6 text-slate-500 font-mono text-xs">{{ fn.size }} B</td>
                        <td class="py-3 px-6">
-                          <span v-if="fn.selected" class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                         <span class="inline-flex items-center px-2 py-1 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200 whitespace-nowrap">
+                           {{ fn.source || 'manual' }} · {{ fn.confidence || 'user' }}
+                         </span>
+                       </td>
+                       <td class="py-3 px-6">
+                          <el-tooltip v-if="!isCompatible(fn)" :content="fn.compatibilityReason || '包含当前不支持的 SIMD/FPU 指令'" placement="left">
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
+                              已跳过（SIMD）
+                            </span>
+                          </el-tooltip>
+                          <span v-else-if="fn.selected" class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-100 text-blue-700 border border-blue-200">
                             待保护 ({{ fn.protection }})
                           </span>
                           <span v-else class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
@@ -249,7 +302,7 @@
                        </td>
                      </tr>
                      <tr v-if="filteredAndSortedFunctions.length === 0">
-                       <td colspan="4" class="py-12 text-center text-slate-400 italic">未在此文件中发现可保护的对象。</td>
+                       <td colspan="6" class="py-12 text-center text-slate-400 italic">未自动发现函数范围，可使用“添加函数”输入已确认的地址范围。</td>
                      </tr>
                    </tbody>
                  </table>
@@ -403,7 +456,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watchEffect, nextTick, computed } from 'vue'
+import { ref, watch, watchEffect, nextTick, computed } from 'vue'
 import {
   Folder, Document, VideoPlay, Search,
   HelpFilled, Lock, InfoFilled, StarFilled, Key, Files, Connection, Setting,
@@ -432,6 +485,8 @@ const enableDebug = ref(false)
 const stripSymbols = ref(false)
 const tokenEntry = ref(false)
 const searchQuery = ref('')
+const currentPage = ref(1)
+const pageSize = 100
 const showAddDialog = ref(false)
 const newFuncForm = ref({ name: '', startAddress: '', endAddress: '' })
 const recentFiles = ref<Array<{name: string, path: string}>>([])
@@ -453,28 +508,51 @@ const closeProject = () => {
 }
 
 // Select all helper capabilities
-const selectedCount = computed(() => {
-  return currentFunctions.value.filter(fn => fn.selected).length
-})
+const isCompatible = (fn: any) => fn.compatible !== false
+
+const selectableFunctions = computed(() => currentFunctions.value.filter(isCompatible))
+const compatibleCount = computed(() => selectableFunctions.value.length)
+const incompatibleCount = computed(() => currentFunctions.value.length - compatibleCount.value)
+const selectedCount = computed(() => selectableFunctions.value.filter(fn => fn.selected).length)
 
 const isAllSelected = computed(() => {
-  return currentFunctions.value.length > 0 && selectedCount.value === currentFunctions.value.length
+  return compatibleCount.value > 0 && selectedCount.value === compatibleCount.value
 })
+
+const isPartiallySelected = computed(() => selectedCount.value > 0 && !isAllSelected.value)
 
 const filteredAndSortedFunctions = computed(() => {
   let list = currentFunctions.value
   if (searchQuery.value.trim()) {
     const keyword = searchQuery.value.toLowerCase()
-    list = list.filter(fn => fn.name.toLowerCase().includes(keyword))
+    list = list.filter(fn =>
+      fn.name.toLowerCase().includes(keyword) ||
+      fn.address.toLowerCase().includes(keyword) ||
+      (fn.source || '').toLowerCase().includes(keyword) ||
+      (fn.compatibilityReason || '').toLowerCase().includes(keyword)
+    )
   }
-  return [...list].sort((a, b) => Number(b.selected) - Number(a.selected))
+  return [...list]
+})
+
+const pagedFunctions = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return filteredAndSortedFunctions.value.slice(start, start + pageSize)
+})
+
+watch(searchQuery, () => {
+  currentPage.value = 1
 })
 
 const toggleAll = (e: Event) => {
   const checked = (e.target as HTMLInputElement).checked
   currentFunctions.value.forEach(fn => {
-    fn.selected = checked
+    fn.selected = isCompatible(fn) ? checked : false
   })
+}
+
+const toggleFunction = (fn: any) => {
+  if (isCompatible(fn)) fn.selected = !fn.selected
 }
 
 // Auto-scroll terminal
@@ -530,11 +608,16 @@ const loadFile = async (selectedPath: string) => {
      
      currentFunctions.value = (result.functions || []).map((f: any) => ({
        ...f,
+       compatible: f.compatible !== false,
        selected: false
      }))
+     currentPage.value = 1
      
      logs.value.push(`[+] 架构: ${result.arch}, 格式: ${result.format}`)
-     logs.value.push(`[+] 符号表解析完毕, 找到 ${currentFunctions.value.length} 个可保护对象。`)
+     logs.value.push(`[+] 函数范围分析完毕，共 ${currentFunctions.value.length} 个函数；可保护 ${compatibleCount.value} 个，已跳过 SIMD/FPU 函数 ${incompatibleCount.value} 个。`)
+     for (const warning of (result.warnings || [])) {
+       logs.value.push(`[!] ${warning}`)
+     }
      
      // Save to recent files
      AddRecentFile(selectedPath).then(() => loadRecentFiles())
@@ -592,7 +675,7 @@ const openFile = async () => {
 }
 
 const runPacker = async () => {
-  const targets = currentFunctions.value.filter(fn => fn.selected)
+  const targets = currentFunctions.value.filter(fn => fn.selected && isCompatible(fn))
   if (!currentPath.value || isProtecting.value || targets.length === 0) return;
   
   isProtecting.value = true
@@ -649,10 +732,16 @@ const addFunction = () => {
     name: name,
     address: '0x' + startAddr.toString(16).toUpperCase(),
     size: size,
+    source: 'manual',
+    confidence: 'user',
     protection: 'Virtualization',
+    compatible: true,
+    compatibilityReason: '',
     selected: true,
     isCustom: true
   })
+  searchQuery.value = ''
+  currentPage.value = Math.ceil(currentFunctions.value.length / pageSize)
 
   logs.value.push(`[+] 已手动添加函数: ${name} @ 0x${startAddr.toString(16).toUpperCase()} - 0x${endAddr.toString(16).toUpperCase()} (${size} bytes)`)
   ElMessage.success(`函数 ${name} 已添加`)

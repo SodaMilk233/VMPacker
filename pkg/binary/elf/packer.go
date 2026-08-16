@@ -16,6 +16,8 @@ import (
 	"github.com/vmpacker/pkg/vm"
 )
 
+const maxVMBytecodeSize = 64 << 20
+
 // ============================================================
 // ELF 解析器 + 修改器 v3
 //
@@ -35,9 +37,13 @@ type AddrSpec struct {
 	Name string // 可选名称
 }
 
-// ParseAddrSpec 解析地址规格: "0xADDR", "0xSTART-0xEND", "0xSTART-0xEND:name"
+// ParseAddrSpec 解析地址规格: "0xADDR", "0xADDR:SIZE[:name]", "0xSTART-0xEND[:name]"
 func ParseAddrSpec(s string) (AddrSpec, error) {
 	var spec AddrSpec
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return spec, fmt.Errorf("地址规格不能为空")
+	}
 	// 分离可选名称 (最后一个冒号后面)
 	if idx := strings.LastIndex(s, ":"); idx > 2 {
 		candidate := s[idx+1:]
@@ -61,6 +67,21 @@ func ParseAddrSpec(s string) (AddrSpec, error) {
 			return spec, fmt.Errorf("结束地址必须大于起始地址")
 		}
 		spec.Addr = start
+		spec.End = end
+	} else if parts := strings.Split(s, ":"); len(parts) == 2 {
+		addr, err := strconv.ParseUint(parts[0], 0, 64)
+		if err != nil {
+			return spec, fmt.Errorf("地址无效: %s", parts[0])
+		}
+		size, err := strconv.ParseUint(parts[1], 0, 64)
+		if err != nil || size == 0 {
+			return spec, fmt.Errorf("大小无效: %s", parts[1])
+		}
+		end, ok := checkedAdd(addr, size)
+		if !ok {
+			return spec, fmt.Errorf("地址范围溢出")
+		}
+		spec.Addr = addr
 		spec.End = end
 	} else {
 		addr, err := strconv.ParseUint(s, 0, 64)
@@ -162,23 +183,32 @@ func (p *Packer) FindFunction(f *elf.File, name string) (*vm.FuncInfo, error) {
 
 // FindFunctionByAddr 通过地址查找函数
 func (p *Packer) FindFunctionByAddr(f *elf.File, spec AddrSpec) (*vm.FuncInfo, error) {
-	// 优先在 .text 段中定位
+	if spec.Addr&3 != 0 {
+		return nil, fmt.Errorf("function address 0x%X is not 4-byte aligned", spec.Addr)
+	}
+	if spec.End > 0 && spec.End&3 != 0 {
+		return nil, fmt.Errorf("function end 0x%X is not 4-byte aligned", spec.End)
+	}
+	if spec.End > 0 && spec.End <= spec.Addr {
+		return nil, fmt.Errorf("function end 0x%X must be greater than start 0x%X", spec.End, spec.Addr)
+	}
+
+	// 优先在包含目标地址的 .text 段中定位。
 	textSec := f.Section(".text")
+	textEnd := uint64(0)
+	textRangeValid := false
+	if textSec != nil {
+		textEnd, textRangeValid = checkedAdd(textSec.Addr, textSec.Size)
+	}
 
 	var secName string
 	var secAddr, secOffset, secSize uint64
-	var secData []byte
 
-	if textSec != nil {
+	if textSec != nil && textRangeValid && spec.Addr >= textSec.Addr && spec.Addr < textEnd {
 		secName = ".text"
 		secAddr = textSec.Addr
 		secOffset = textSec.Offset
 		secSize = textSec.Size
-		d, err := textSec.Data()
-		if err != nil {
-			return nil, fmt.Errorf("reading .text failed: %v", err)
-		}
-		secData = d
 	} else {
 		// Fallback: 在可执行 LOAD segment 中查找
 		found := false
@@ -189,17 +219,15 @@ func (p *Packer) FindFunctionByAddr(f *elf.File, spec AddrSpec) (*vm.FuncInfo, e
 			if prog.Flags&elf.PF_X == 0 {
 				continue
 			}
-			segEnd := prog.Vaddr + prog.Memsz
+			segEnd, ok := checkedAdd(prog.Vaddr, prog.Filesz)
+			if !ok {
+				continue
+			}
 			if spec.Addr >= prog.Vaddr && spec.Addr < segEnd {
 				secName = "__LOAD_X"
 				secAddr = prog.Vaddr
 				secOffset = prog.Off
 				secSize = prog.Filesz
-				d := make([]byte, prog.Filesz)
-				if _, err := prog.ReadAt(d, 0); err != nil {
-					return nil, fmt.Errorf("reading LOAD segment failed: %v", err)
-				}
-				secData = d
 				found = true
 				break
 			}
@@ -210,29 +238,31 @@ func (p *Packer) FindFunctionByAddr(f *elf.File, spec AddrSpec) (*vm.FuncInfo, e
 	}
 
 	// 确认地址在范围内
-	if spec.Addr < secAddr || spec.Addr >= secAddr+secSize {
+	secEnd, ok := checkedAdd(secAddr, secSize)
+	if !ok || spec.Addr < secAddr || spec.Addr >= secEnd {
 		return nil, fmt.Errorf("address 0x%X not in %s (0x%X-0x%X)",
-			spec.Addr, secName, secAddr, secAddr+secSize)
+			spec.Addr, secName, secAddr, secEnd)
 	}
 
 	var size uint64
 	if spec.End > 0 {
-		// 用户指定了结束地址
+		if spec.End > secEnd {
+			return nil, fmt.Errorf("function range 0x%X-0x%X exceeds %s file-backed range ending at 0x%X",
+				spec.Addr, spec.End, secName, secEnd)
+		}
 		size = spec.End - spec.Addr
 	} else {
-		// 自动检测: 扫描到 RET (0xD65F03C0) 指令
-		startOff := spec.Addr - secAddr
-		found := false
-		for i := startOff; i+4 <= uint64(len(secData)); i += 4 {
-			inst := binary.LittleEndian.Uint32(secData[i:])
-			if inst == 0xD65F03C0 { // RET
-				size = i + 4 - startOff
-				found = true
+		for _, candidate := range DiscoverFunctions(f).Functions {
+			if candidate.Addr == spec.Addr {
+				size = candidate.Size
+				if spec.Name == "" || strings.HasPrefix(spec.Name, "sub_") {
+					spec.Name = candidate.Name
+				}
 				break
 			}
 		}
-		if !found {
-			return nil, fmt.Errorf("cannot detect function size at 0x%X (no RET found)", spec.Addr)
+		if size == 0 {
+			return nil, fmt.Errorf("cannot safely detect function size at 0x%X; specify START-END or ADDR:SIZE", spec.Addr)
 		}
 	}
 
@@ -325,6 +355,12 @@ func (p *Packer) Process() error {
 	fmt.Printf("[*] VM interp blob: %d bytes\n", len(p.interpBlob))
 
 	dec := arm64.NewDecoder()
+	discovery := DiscoverFunctions(f)
+	knownFunctionStarts := NativeBranchTargets(f, discovery.Functions)
+	// 显式地址范围也由用户确认了函数边界，可安全作为尾调用入口。
+	for _, spec := range p.addrSpecs {
+		knownFunctionStarts = append(knownFunctionStarts, spec.Addr)
+	}
 
 	// 第一阶段: 收集所有函数的字节码
 	type funcEntry struct {
@@ -346,6 +382,10 @@ func (p *Packer) Process() error {
 	}
 
 	var funcs []FuncBytecode
+	var failureReport strings.Builder
+	failedFunctions := 0
+	totalUnsupported := 0
+	firstFailure := ""
 	for _, entry := range entries {
 		fmt.Printf("\n[*] Processing: %s\n", entry.name)
 
@@ -374,6 +414,7 @@ func (p *Packer) Process() error {
 		}
 
 		trans := arm64.NewTranslator(fi.Addr, int(fi.Size))
+		trans.SetExternalBranchTargets(knownFunctionStarts)
 		if p.debug {
 			trans.SetDebug(true)
 		}
@@ -391,54 +432,23 @@ func (p *Packer) Process() error {
 				fmt.Printf("        %s\n", u)
 			}
 
-			// 生成翻译失败 debug 文件
-			debugPath := p.outputPath + ".debug.txt"
-			df, derr := os.Create(debugPath)
-			if derr != nil {
-				fmt.Printf("    [!] debug 文件创建失败: %v\n", derr)
-			} else {
-				fmt.Fprintf(df, "================================================================\n")
-				fmt.Fprintf(df, "翻译失败报告 — %s @ 0x%X\n", entry.name, fi.Addr)
-				fmt.Fprintf(df, "函数大小: %d bytes, 总指令数: %d, 已翻译: %d\n",
-					fi.Size, result.TotalInsts, result.TransInsts)
-				fmt.Fprintf(df, "================================================================\n\n")
-				fmt.Fprintf(df, "不支持的指令 (%d):\n\n", len(result.Unsupported))
-
-				// 构建 offset→Instruction 索引，用于提取原始字节
-				instMap := make(map[int]vm.Instruction)
-				for _, inst := range insts {
-					instMap[inst.Offset] = inst
-				}
-
-				for idx, u := range result.Unsupported {
-					fmt.Fprintf(df, "[%d] %s\n", idx+1, u)
-
-					// 尝试从 unsupported 字符串解析偏移 (格式: "偏移 0xNNNN: ...")
-					var off int
-					if _, err := fmt.Sscanf(u, "偏移 0x%X:", &off); err == nil {
-						if inst, ok := instMap[off]; ok {
-							raw := inst.Raw
-							fmt.Fprintf(df, "    原始字节: %02X %02X %02X %02X\n",
-								byte(raw), byte(raw>>8), byte(raw>>16), byte(raw>>24))
-							fmt.Fprintf(df, "    绝对地址: 0x%X\n", fi.Addr+uint64(off))
-						}
-					}
-					fmt.Fprintln(df)
-				}
-
-				fmt.Fprintf(df, "================================================================\n")
-				fmt.Fprintf(df, "修复建议:\n")
-				fmt.Fprintf(df, "- 为每条不支持的指令编写 demo 测试用例 (参考 demo/ 目录)\n")
-				fmt.Fprintf(df, "- 在 pkg/arch/arm64/translator.go translateOne() 中添加对应 case\n")
-				fmt.Fprintf(df, "- 使用 -v 标志查看完整反汇编上下文\n")
-				fmt.Fprintf(df, "================================================================\n")
-
-				df.Close()
-				fmt.Printf("    [+] 翻译失败 debug 文件: %s\n", debugPath)
+			failedFunctions++
+			totalUnsupported += len(result.Unsupported)
+			if firstFailure == "" {
+				firstFailure = fmt.Sprintf("%s @ 0x%X: %s", entry.name, fi.Addr, result.Unsupported[0])
 			}
-
-			return fmt.Errorf("translation aborted: %d unsupported instruction(s) in %s — cannot produce safe output",
-				len(result.Unsupported), entry.name)
+			fmt.Fprintf(&failureReport, "================================================================\n")
+			fmt.Fprintf(&failureReport, "%s @ 0x%X, size=%d, translated=%d/%d\n",
+				entry.name, fi.Addr, fi.Size, result.TransInsts, result.TotalInsts)
+			for idx, unsupported := range result.Unsupported {
+				fmt.Fprintf(&failureReport, "[%d] %s\n", idx+1, unsupported)
+				var off int
+				if _, err := fmt.Sscanf(unsupported, "偏移 0x%X:", &off); err == nil {
+					fmt.Fprintf(&failureReport, "    绝对地址: 0x%X\n", fi.Addr+uint64(off))
+				}
+			}
+			fmt.Fprintln(&failureReport)
+			continue
 		}
 
 		// debug: 生成对照文件 (必须在反转/加密之前, 使用原始正向字节码)
@@ -495,6 +505,16 @@ func (p *Packer) Process() error {
 		finalBytecode = append(finalBytecode, trailer...)
 		result.Bytecode = finalBytecode
 		result.CodeLen = newCodeLen
+		if len(result.Bytecode) > maxVMBytecodeSize {
+			failedFunctions++
+			message := fmt.Sprintf("%s @ 0x%X: VM bytecode %d bytes exceeds %d-byte limit",
+				entry.name, fi.Addr, len(result.Bytecode), maxVMBytecodeSize)
+			if firstFailure == "" {
+				firstFailure = message
+			}
+			fmt.Fprintf(&failureReport, "================================================================\n%s\n\n", message)
+			continue
+		}
 
 		if p.verbose {
 			fmt.Printf("    [REV] reversed: %d insts, newCodeLen=%d (was %d), offsetMap entries=%d\n",
@@ -534,6 +554,16 @@ func (p *Packer) Process() error {
 		}
 
 		funcs = append(funcs, FuncBytecode{FI: fi, Encrypted: encrypted, XorKey: xorKey})
+	}
+
+	if failedFunctions > 0 {
+		reportPath := p.outputPath + ".debug.txt"
+		if err := os.WriteFile(reportPath, []byte(failureReport.String()), 0644); err != nil {
+			return fmt.Errorf("translation preflight failed for %d/%d functions (%d unsupported instructions); first: %s; writing report failed: %v",
+				failedFunctions, len(entries), totalUnsupported, firstFailure, err)
+		}
+		return fmt.Errorf("translation preflight failed for %d/%d functions (%d unsupported instructions); first: %s; report: %s",
+			failedFunctions, len(entries), totalUnsupported, firstFailure, reportPath)
 	}
 
 	// 第二阶段: 批量注入 (一次 PT_NOTE 劫持)
@@ -858,17 +888,18 @@ func (p *Packer) injectVMPBatch(funcs []FuncBytecode) error {
 		tokenTableOff := len(payload)
 		tokenTableVA := payloadVA + uint64(tokenTableOff)
 
-		// 每个函数一个 token_desc_t (16 bytes): bc_off(u64) + bc_len(u32) + reserved(u32)
+		// 每个函数一个 token_desc_t (24 bytes)，携带链接时镜像锚点以恢复 ASLR load bias。
 		// bc_off = 相对于 _token_table_va 自身地址的偏移 (PIE 兼容)
 		selfVA := payloadVA + tokenTableVAOff // _token_table_va 的 VA
 		for i := range funcs {
 			bcVA := payloadVA + uint64(records[i].payloadOff)
 			bcLen := uint32(records[i].bcLen)
 
-			var desc [16]byte
+			var desc [24]byte
 			binary.LittleEndian.PutUint64(desc[0:], bcVA-selfVA) // 相对偏移
 			binary.LittleEndian.PutUint32(desc[8:], bcLen)
 			binary.LittleEndian.PutUint32(desc[12:], 0) // reserved
+			binary.LittleEndian.PutUint64(desc[16:], selfVA)
 			payload = append(payload, desc[:]...)
 		}
 

@@ -18,6 +18,7 @@
   0x49                  /* MOV Wd, #imm32               6B: [op][d][imm32]     \
                          */
 #define OP_MOV_REG 0x2F /* MOV Xd, Xn                   3B: [op][d][n] */
+#define OP_MOV_IMAGE 0x98 /* MOV Xd, image_base+VA       10B: [op][d][image_va] */
 
 /* ---- 内存 (LDR/STR) ---- */
 #define OP_LOAD8 0x91  /* LDRB Xd, [Xn, #off16]        5B: [op][d][n][off16] */
@@ -145,6 +146,7 @@
 /* ---- 栈立即数 ---- */
 #define OP_S_PUSH_IMM32 0x03 /* push imm32            5B: [op][imm32] */
 #define OP_S_PUSH_IMM64 0x04 /* push imm64            9B: [op][imm64] */
+#define OP_S_PUSH_IMAGE 0x99 /* push image_base+VA    9B: [op][image_va] */
 
 /* ---- 栈控制 ---- */
 #define OP_S_DUP 0x05  /* dup 栈顶              1B */

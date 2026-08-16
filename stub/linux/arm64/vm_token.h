@@ -26,7 +26,8 @@
 typedef struct {
     u64 bc_off;     /* 加密字节码相对于 _token_table_va 的偏移 (PIE 兼容) */
     u32 bc_len;     /* 字节码长度 */
-    u32 reserved;   /* 对齐到 16B */
+	u32 reserved;
+	u64 image_anchor_va; /* _token_table_va 在 ELF 中的链接时 VA */
 } token_desc_t;
 
 /* ---- 最大被保护函数数 ---- */

@@ -138,11 +138,23 @@ var ldstPatterns = []InstrPattern{
 		Fields: []FieldDef{fRm16, fRn, fRd},
 		Post:   func(_ map[string]int64, inst *vm.Instruction) { inst.SF = true },
 	},
+	// LDRSB Wt (reg): opc=11, 32-bit destination
+	{
+		Name: "LDRSB_REG_32", Mask: 0xFFE00C00, Value: 0x38E00800, Op: LDRSB_REG,
+		Fields: []FieldDef{fRm16, fRn, fRd},
+		Post:   func(_ map[string]int64, inst *vm.Instruction) { inst.SF = false },
+	},
 	// LDRSH (reg): size=01,V=0,opc=10 → 0x78A00800
 	{
 		Name: "LDRSH_REG", Mask: 0xFFE00C00, Value: 0x78A00800, Op: LDRSH_REG,
 		Fields: []FieldDef{fRm16, fRn, fRd},
 		Post:   func(_ map[string]int64, inst *vm.Instruction) { inst.SF = true },
+	},
+	// LDRSH Wt (reg): opc=11, 32-bit destination
+	{
+		Name: "LDRSH_REG_32", Mask: 0xFFE00C00, Value: 0x78E00800, Op: LDRSH_REG,
+		Fields: []FieldDef{fRm16, fRn, fRd},
+		Post:   func(_ map[string]int64, inst *vm.Instruction) { inst.SF = false },
 	},
 	// LDRSW (reg): size=10,V=0,opc=10 → 0xB8A00800
 	{
@@ -210,11 +222,21 @@ var ldstPatterns = []InstrPattern{
 		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, fRn, fRd},
 		Post:   postUnscaled(true),
 	},
+	{
+		Name: "LDURSB_32", Mask: 0xFFE00C00, Value: 0x38C00000, Op: LDRSB_IMM,
+		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, fRn, fRd},
+		Post:   postUnscaled(false),
+	},
 	// LDURSH (signed halfword unscaled): size=01,V=0,opc=10 → 0x78800000
 	{
 		Name: "LDURSH", Mask: 0xFFE00C00, Value: 0x78800000, Op: LDRSH_IMM,
 		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, fRn, fRd},
 		Post:   postUnscaled(true),
+	},
+	{
+		Name: "LDURSH_32", Mask: 0xFFE00C00, Value: 0x78C00000, Op: LDRSH_IMM,
+		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, fRn, fRd},
+		Post:   postUnscaled(false),
 	},
 	// LDURSW (signed word unscaled): size=10,V=0,opc=10 → 0xB8800000
 	{
@@ -280,19 +302,29 @@ var ldstPatterns = []InstrPattern{
 	{
 		Name: "LDRSB_IMM_PP", Mask: 0xFFE00400, Value: 0x38800400, Op: LDRSB_IMM,
 		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, {Name: "wb", Hi: 11, Lo: 10}, fRn, fRd},
-		Post:   postLdrStrPrePostXZR,
+		Post:   postSignedPrePost(true),
+	},
+	{
+		Name: "LDRSB_IMM_PP_32", Mask: 0xFFE00400, Value: 0x38C00400, Op: LDRSB_IMM,
+		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, {Name: "wb", Hi: 11, Lo: 10}, fRn, fRd},
+		Post:   postSignedPrePost(false),
 	},
 	// LDRSH pre/post: size=01,V=0,opc=10,wb → 0x78800400
 	{
 		Name: "LDRSH_IMM_PP", Mask: 0xFFE00400, Value: 0x78800400, Op: LDRSH_IMM,
 		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, {Name: "wb", Hi: 11, Lo: 10}, fRn, fRd},
-		Post:   postLdrStrPrePostXZR,
+		Post:   postSignedPrePost(true),
+	},
+	{
+		Name: "LDRSH_IMM_PP_32", Mask: 0xFFE00400, Value: 0x78C00400, Op: LDRSH_IMM,
+		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, {Name: "wb", Hi: 11, Lo: 10}, fRn, fRd},
+		Post:   postSignedPrePost(false),
 	},
 	// LDRSW pre/post: size=10,V=0,opc=10,wb → 0xB8800400
 	{
 		Name: "LDRSW_IMM_PP", Mask: 0xFFE00400, Value: 0xB8800400, Op: LDRSW_IMM,
 		Fields: []FieldDef{{Name: "imm9", Hi: 20, Lo: 12, Signed: true}, {Name: "wb", Hi: 11, Lo: 10}, fRn, fRd},
-		Post:   postLdrStrPrePostXZR,
+		Post:   postSignedPrePost(true),
 	},
 
 	// ================================================================
@@ -370,6 +402,12 @@ var ldstPatterns = []InstrPattern{
 		Name: "LDRSH_UIMM", Mask: 0xFFC00000, Value: 0x79800000, Op: LDRSH_IMM,
 		Fields: []FieldDef{{Name: "imm12", Hi: 21, Lo: 10}, fRn, fRd},
 		Post:   postUnsigned(2, true),
+	},
+	// LDRSH Wt unsigned (size=01, opc=11)
+	{
+		Name: "LDRSH_UIMM32", Mask: 0xFFC00000, Value: 0x79C00000, Op: LDRSH_IMM,
+		Fields: []FieldDef{{Name: "imm12", Hi: 21, Lo: 10}, fRn, fRd},
+		Post:   postUnsigned(2, false),
 	},
 
 	// ================================================================
@@ -542,6 +580,13 @@ func postLdrStrPrePostXZR(f map[string]int64, inst *vm.Instruction) {
 	inst.Imm = f["imm9"]
 	inst.WB = int(wb)
 	xzrReplace(&inst.Rd)
+}
+
+func postSignedPrePost(sf bool) PostFunc {
+	return func(f map[string]int64, inst *vm.Instruction) {
+		postLdrStrPrePostXZR(f, inst)
+		inst.SF = sf
+	}
 }
 
 // postUnscaled LDUR/STUR 无缩放偏移后处理: imm9 直接使用，不缩放

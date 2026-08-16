@@ -48,15 +48,16 @@ type DebugEntry struct {
 
 // Translator ARM64 → VM 翻译器
 type Translator struct {
-	code        []byte        // 输出缓冲
-	labels      map[int]int   // ARM64偏移 → VM字节码位置 映射
-	fixups      []branchFixup // 待修补的分支目标
-	funcSize    int           // 原函数大小（字节）
-	funcAddr    uint64        // 原函数起始地址
-	unsupported []string
-	decoder     *Decoder     // 解码器引用（用于名称查找）
-	debug       bool         // debug 模式
-	debugLog    []DebugEntry // debug 对照记录
+	code                  []byte              // 输出缓冲
+	labels                map[int]int         // ARM64偏移 → VM字节码位置 映射
+	fixups                []branchFixup       // 待修补的分支目标
+	funcSize              int                 // 原函数大小（字节）
+	funcAddr              uint64              // 原函数起始地址
+	externalBranchTargets map[uint64]struct{} // 允许作为外部尾调用目标的函数入口
+	unsupported           []string
+	decoder               *Decoder     // 解码器引用（用于名称查找）
+	debug                 bool         // debug 模式
+	debugLog              []DebugEntry // debug 对照记录
 }
 
 type branchFixup struct {
@@ -79,6 +80,15 @@ func NewTranslator(funcAddr uint64, funcSize int) *Translator {
 // SetDebug 开启 debug 模式
 func (t *Translator) SetDebug(on bool) {
 	t.debug = on
+}
+
+// SetExternalBranchTargets 设置可由越界无条件 B 到达的已知函数入口。
+// 未命中入口的越界分支仍会被拒绝，避免跳入其他函数中间执行。
+func (t *Translator) SetExternalBranchTargets(targets []uint64) {
+	t.externalBranchTargets = make(map[uint64]struct{}, len(targets))
+	for _, target := range targets {
+		t.externalBranchTargets[target] = struct{}{}
+	}
 }
 
 // DebugLog 返回 debug 对照记录

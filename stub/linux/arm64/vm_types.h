@@ -20,7 +20,7 @@ typedef short i16;
 #define VM_STACK_SIZE 32       /* PUSH/POP 操作栈深度 */
 #define VM_EVAL_STACK_SIZE 256 /* 栈机器操作栈深度 */
 #define VM_MEM_STACK 16384     /* 内存栈 (SP 指向的空间, 16KB) */
-#define VM_BYTECODE_MAX 65536  /* 最大字节码长度 (64KB, 含映射表) */
+#define VM_BYTECODE_MAX (64u * 1024u * 1024u) /* 最大字节码长度 (64MiB) */
 #define VM_SIMD_BUF 64         /* SIMD 临时缓冲大小 */
 
 /* ---- 标志位 (NZCV 简化) ---- */
@@ -72,6 +72,9 @@ typedef struct {
   addr_map_entry_t *addr_map; /* ARM64偏移→VM偏移 映射表 */
   u32 map_count;              /* 映射表条目数 */
 
+	/* ELF ET_DYN/PIE 运行时加载偏移 */
+	u64 image_bias;
+
   /* OpcodeCryptor: 逐指令 opcode 加密 */
   u32 oc_key; /* opcode 加密密钥 (4B, 从 trailer 读取) */
 
@@ -115,6 +118,7 @@ static inline void vm_ctx_init(vm_ctx_t *vm, u64 *args, u8 *bytecode, u32 len) {
   vm->func_size = 0;
   vm->addr_map = 0;
   vm->map_count = 0;
+	vm->image_bias = 0;
 
   /* OpcodeCryptor: 默认无加密 (key=0 时解密为恒等) */
   vm->oc_key = 0;

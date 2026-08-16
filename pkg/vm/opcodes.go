@@ -20,6 +20,7 @@ const (
 	OpMovImm   byte = 0x5A // Rx = imm64            10B: [op][r][imm64_LE]
 	OpMovImm32 byte = 0x49 // Rx = imm32 (零扩展)   6B: [op][r][imm32_LE]
 	OpMovReg   byte = 0x2F // Rx = Ry               3B: [op][dst][src]
+	OpMovImage byte = 0x98 // Rx = image_base+VA    10B: [op][r][image_va]
 	OpLoad8    byte = 0x91 // Rx = *(u8*)(Ry+imm16) 5B: [op][dst][base][imm16]
 	OpLoad32   byte = 0xA4 // Rx = *(u32*)(Ry+i16)  5B: [op][dst][base][imm16]
 	OpLoad64   byte = 0xB7 // Rx = *(u64*)(Ry+i16)  5B: [op][dst][base][imm16]
@@ -131,6 +132,7 @@ const (
 	OpSVstore    byte = 0x02 // pop → R[r]            2B: [op][r]
 	OpSPushImm32 byte = 0x03 // push imm32            5B: [op][imm32]
 	OpSPushImm64 byte = 0x04 // push imm64            9B: [op][imm64]
+	OpSPushImage byte = 0x99 // push image_base+VA    9B: [op][image_va]
 
 	// 栈控制
 	OpSDup  byte = 0x05 // dup 栈顶    1B

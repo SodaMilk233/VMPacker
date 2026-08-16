@@ -48,6 +48,7 @@ BUILD_DIR  = build
 
 # ------ VM 解释器 blob ------
 STUB_SRC   = $(STUB_DIR)/vm_interp.c
+STUB_HEADERS = $(wildcard $(STUB_DIR)/*.h $(STUB_DIR)/vm_handlers/*.h)
 STUB_LDS   = $(STUB_DIR)/vm_interp.lds
 STUB_O     = $(BUILD_DIR)/stub/vm_interp.o
 STUB_ELF   = $(BUILD_DIR)/stub/vm_interp.elf
@@ -86,7 +87,7 @@ toolchain-info:
 # ------ VM 解释器 blob ------
 stub: $(STUB_BIN)
 
-$(STUB_O): $(STUB_SRC) | $(BUILD_DIR)/stub
+$(STUB_O): $(STUB_SRC) $(STUB_HEADERS) | $(BUILD_DIR)/stub
 	$(CC) $(STUB_CFLAGS) $< -o $@
 
 $(STUB_ELF): $(STUB_O) $(STUB_LDS)

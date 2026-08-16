@@ -23,6 +23,7 @@ var opTable = map[byte]opInfo{
 	OpMovImm:   {"MOV_IMM64", 10}, // op + r + imm64
 	OpMovImm32: {"MOV_IMM32", 6},  // op + r + imm32
 	OpMovReg:   {"MOV_REG", 3},    // op + dst + src
+	OpMovImage: {"MOV_IMAGE", 10}, // op + r + image VA
 
 	OpLoad8:   {"LOAD8", 5}, // op + dst + base + imm16
 	OpLoad32:  {"LOAD32", 5},
@@ -113,6 +114,7 @@ var opTable = map[byte]opInfo{
 	OpSVstore:    {"S_VSTORE", 2}, // op + r
 	OpSPushImm32: {"S_PUSH32", 5}, // op + imm32
 	OpSPushImm64: {"S_PUSH64", 9}, // op + imm64
+	OpSPushImage: {"S_PUSH_IMAGE", 9},
 	OpSDup:       {"S_DUP", 1},
 	OpSSwap:      {"S_SWAP", 1},
 	OpSDrop:      {"S_DROP", 1},
@@ -191,10 +193,10 @@ func DisasmOne(code []byte, pc int) (string, int) {
 	case OpHalt:
 		return fmt.Sprintf("%04X: HALT", pc), 1
 
-	case OpMovImm:
+	case OpMovImm, OpMovImage:
 		r := code[pc+1]
 		v := binary.LittleEndian.Uint64(code[pc+2:])
-		return fmt.Sprintf("%04X: MOV R%d, 0x%X", pc, r, v), 10
+		return fmt.Sprintf("%04X: %s R%d, 0x%X", pc, info.Name, r, v), 10
 
 	case OpMovImm32:
 		r := code[pc+1]

@@ -15,9 +15,9 @@ static inline u32 h_nop(vm_ctx_t *vm) {
   return 1;
 }
 
-/* CALL_NAT: BLR 绝对地址调用  [9B: op | addr64] */
+/* CALL_NAT: 调用 ELF image VA，运行时叠加 ET_DYN load bias */
 static inline u32 h_call_nat(vm_ctx_t *vm) {
-  u64 addr = rd64(&vm->bc[vm->pc + 1]);
+	u64 addr = vm->image_bias + rd64(&vm->bc[vm->pc + 1]);
   native_fn_t fn = (native_fn_t)addr;
   vm->R[0] = fn(vm->R[0], vm->R[1], vm->R[2], vm->R[3], vm->R[4], vm->R[5],
                 vm->R[6], vm->R[7]);

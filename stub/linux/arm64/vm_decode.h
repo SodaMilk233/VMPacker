@@ -102,10 +102,12 @@ static inline u8 vm_insn_size(u8 op) {
   case OP_TBZ:
   case OP_TBNZ:
     return 7;
-  case OP_CALL_NAT:
-    return 9;
-  case OP_MOV_IMM:
-    return 10;
+	case OP_CALL_NAT:
+	case OP_S_PUSH_IMAGE:
+		return 9;
+	case OP_MOV_IMM:
+	case OP_MOV_IMAGE:
+		return 10;
   /* ---- 栈机器操作码 ---- */
   case OP_S_DUP:
   case OP_S_SWAP:

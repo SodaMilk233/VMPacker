@@ -59,6 +59,13 @@ static inline u32 h_s_push_imm64(vm_ctx_t *vm) {
   return 9;
 }
 
+/* PUSH_IMAGE: push an ELF image VA relocated by the runtime load bias */
+static inline u32 h_s_push_image(vm_ctx_t *vm) {
+  u64 image_va = rd64(&vm->bc[vm->pc + 1]);
+  SPUSH(vm, vm->image_bias + image_va);
+  return 9;
+}
+
 /* ================================================================
  * 栈控制
  * ================================================================ */

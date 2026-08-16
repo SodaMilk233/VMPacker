@@ -1,8 +1,6 @@
 package arm64
 
 import (
-	"fmt"
-
 	"github.com/vmpacker/pkg/vm"
 )
 
@@ -28,39 +26,54 @@ func (t *Translator) trSBFM(inst vm.Instruction) error {
 		regSize = 64
 	}
 
-	if imms == regSize-1 {
-		// ASR: 对于32-bit，先trunc32确保高32位为0，再用64-bit ASR
-		if !inst.SF {
-			// 先将源值符号扩展到64位：SHL 32, ASR 32 使bit31扩展到bit63
-			t.emit(vm.OpShlImm, rd, rn)
-			t.emitU32(32)
-			t.emit(vm.OpAsrImm, rd, rd)
-			t.emitU32(32 + immr)
-			t.trunc32(rd)
-		} else {
-			t.emit(vm.OpAsrImm, rd, rn)
-			t.emitU32(immr)
-		}
-		return nil
+	// Work in the stack VM so Rd may safely alias Rn. W-register sources are
+	// explicitly truncated because every VM register is physically 64-bit.
+	t.sVload(rn)
+	if !inst.SF {
+		t.sPushImm32(0xFFFFFFFF)
+		t.emit(vm.OpSAnd)
 	}
-	if immr == 0 {
-		// SXTB/SXTH/SXTW: 符号扩展
-		// VM寄存器是64-bit，所以需要用64-bit的shift宽度来做sign extension
-		var shiftAmt uint32
-		if inst.SF {
-			shiftAmt = 64 - (imms + 1)
-		} else {
-			// 32-bit: 先SHL到bit63位置，再ASR回来，最后trunc32
-			shiftAmt = 64 - (imms + 1)
+
+	var width uint32
+	var leftShift uint32
+	if imms >= immr {
+		// SBFX/ASR: extract [imms:immr], then sign-extend that field.
+		width = imms - immr + 1
+		if immr > 0 {
+			t.sPushImm32(immr)
+			t.emit(vm.OpSShr)
 		}
-		t.emit(vm.OpShlImm, rd, rn)
-		t.emitU32(shiftAmt)
-		t.emit(vm.OpAsrImm, rd, rd)
-		t.emitU32(shiftAmt)
-		if !inst.SF {
-			t.trunc32(rd)
+	} else {
+		// SBFIZ: sign-extend the low field and insert it at regSize-immr.
+		width = imms + 1
+		leftShift = regSize - immr
+		if width < 64 {
+			t.sPushImm(bitMask(width))
+			t.emit(vm.OpSAnd)
 		}
-		return nil
 	}
-	return fmt.Errorf("复杂 SBFM (immr=%d, imms=%d) 暂不支持", immr, imms)
+
+	if width < 64 {
+		shift := uint32(64) - width
+		t.sPushImm32(shift)
+		t.emit(vm.OpSShl)
+		t.sPushImm32(shift)
+		t.emit(vm.OpSAsr)
+	}
+	if leftShift > 0 {
+		t.sPushImm32(leftShift)
+		t.emit(vm.OpSShl)
+	}
+	if !inst.SF {
+		t.emit(vm.OpSTrunc32)
+	}
+	t.sVstore(rd)
+	return nil
+}
+
+func bitMask(width uint32) uint64 {
+	if width >= 64 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << width) - 1
 }

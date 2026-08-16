@@ -167,6 +167,23 @@ func TestDecode_LDR_STR_unsigned(t *testing.T) {
 	expect(t, "STRB uoff Imm", int64(56), inst.Imm)
 }
 
+func TestDecode_LDRSH_32bitVariants(t *testing.T) {
+	d := NewDecoder()
+
+	inst := d.Decode(0x79C04D08, 0) // ldrsh w8, [x8, #0x26]
+	expect(t, "LDRSH W unsigned Op", int(LDRSH_IMM), inst.Op)
+	expect(t, "LDRSH W unsigned SF", false, inst.SF)
+	expect(t, "LDRSH W unsigned Imm", int64(0x26), inst.Imm)
+	expect(t, "LDRSH W unsigned Rn", 8, inst.Rn)
+	expect(t, "LDRSH W unsigned Rd", 8, inst.Rd)
+
+	inst = d.Decode(0x38E86928, 0) // ldrsb w8, [x9, x8]
+	expect(t, "LDRSB W register Op", int(LDRSB_REG), inst.Op)
+	expect(t, "LDRSB W register SF", false, inst.SF)
+	expect(t, "LDRSB W register Rn", 9, inst.Rn)
+	expect(t, "LDRSB W register Rm", 8, inst.Rm)
+}
+
 func TestDecode_LDR_STR_Q_zeroOffset(t *testing.T) {
 	d := NewDecoder()
 
